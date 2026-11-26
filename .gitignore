@@ -1,0 +1,14 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.env
+data/
+secrets/
+*auth*.json
+config.json
+ColabCloudRelay/

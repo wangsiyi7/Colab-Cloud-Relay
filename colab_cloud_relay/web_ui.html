@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Colab-Cloud-Relay · Google Colab 云端永久传输节点</title>
+<style>
+  :root{--bg:#f5f3ee;--card:#fff;--ink:#20241f;--muted:#6f756d;--line:#e4e0d5;--accent:#136f63;--soft:#e3f0ed;--amber:#9a6b16;--red:#b3402f}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);font-size:14px;padding:18px}
+  .wrap{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+  h1{font-size:20px}
+  h2{font-size:15px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+  .hint{font-size:12px;color:var(--muted)}
+  .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+  .btn{border:1px solid var(--ink);background:#fff;color:var(--ink);padding:6px 12px;border-radius:8px;font-size:12.5px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:4px}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .btn.sm{padding:4px 9px;font-size:11.5px;border-color:#c9c4b7}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:600}
+  .p-ok{background:var(--soft);color:var(--accent)}
+  .p-warn{background:#f7efdd;color:var(--amber)}
+  .p-err{background:#fbeae4;color:var(--red)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+  .form{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .form .full{grid-column:1/-1}
+  label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+  input,select,textarea{padding:7px 9px;border:1px solid var(--line);border-radius:8px;font-size:13px;font-family:inherit}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;font-size:12.5px}
+  th{background:#faf8f2;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card head">
+    <div>
+      <h1>⚡ Colab-Cloud-Relay · 云端永久中转节点</h1>
+      <div class="hint">Google Colab Ultra (1000 积分) + 百度网盘 SVIP10 / URL 离线直存 Google 云盘 · 0 本机带宽 / 0 VPN 流量</div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" onclick="runAutoConfig()">🛠️ 一键自动配置</button>
+      <button class="btn primary" onclick="openColabExternal()">🚀 打开 Colab + 复制 Cookie</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2><span>🤖 Colab 云端守护节点</span><span id="hbPill" class="pill p-warn">检查中</span></h2>
+      <div class="hint" id="hbDetail">—</div>
+    </div>
+    <div class="card">
+      <h2><span>📂 Google Drive 队列目录</span><span id="gdPill" class="pill p-warn">检查中</span></h2>
+      <div class="mono" id="gdPath" style="word-break:break-all">—</div>
+    </div>
+    <div class="card">
+      <h2><span>🔑 百度 SVIP10 凭据</span><span id="bdPill" class="pill p-warn">检查中</span></h2>
+      <div class="hint" id="bdHint">—</div>
+      <div style="margin-top:8px"><button class="btn sm" onclick="copyCookieOnly()">🔑 复制 BAIDU_COOKIE</button></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span>📨 下发工单到 Colab 云端队列（本地发号，Colab 机房直传）</span></h2>
+    <div class="form">
+      <label>任务类型
+        <select id="qKind" onchange="onKindChange()">
+          <option value="baidu_to_gdrive">百度网盘 SVIP10 ➔ Google 云盘</option>
+          <option value="url_to_gdrive">HTTP/HTTPS 直链离线下载 ➔ Google 云盘</option>
+          <option value="gdrive_to_baidu">Google 云盘 ➔ 百度网盘</option>
+          <option value="gdrive_organize">Google 云盘目录扫描统计</option>
+        </select>
+      </label>
+      <label>目标目录（Google Drive 子目录或百度路径）
+        <input id="qTarget" value="百度网盘同步">
+      </label>
+      <label class="full" id="qSrcLabel">源路径 / 下载链接（每行一条）
+        <textarea id="qSources" rows="3" class="mono" placeholder="/易·太极/离·学习课程"></textarea>
+      </label>
+      <label>任务名称（可选）
+        <input id="qTitle" placeholder="留空自动命名">
+      </label>
+      <label>单轮保护阈值 (GB，防超 Google Drive 750GB/天上限)
+        <input id="qLimitGb" type="number" value="700">
+      </label>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:8px">
+      <button class="btn primary" onclick="enqueueJob()">🚀 派发到云端队列</button>
+      <a class="btn" href="/api/colab-relay/master-notebook/download" download>⬇️ 下载 Colab_Cloud_Relay.ipynb</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span>📋 云端工单台账</span><button class="btn sm" onclick="loadAll()">↻ 刷新</button></h2>
+    <table>
+      <thead><tr><th>ID / 名称</th><th>类型</th><th>目标目录</th><th>状态</th><th>结果</th><th>操作</th></tr></thead>
+      <tbody id="qBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+async function api(url, opt={}){
+  const r = await fetch(url, {headers:{"Content-Type":"application/json"}, ...opt});
+  const d = await r.json().catch(() => ({}));
+  if(!r.ok) throw new Error(d.detail || r.statusText);
+  return d;
+}
+function onKindChange(){
+  const k = $("#qKind").value;
+  $("#qTarget").value = k === "gdrive_to_baidu" ? "/NotebookLM_同步" : (k === "url_to_gdrive" ? "Colab离线下载" : "百度网盘同步");
+}
+async function loadAll(){
+  const st = await api("/api/colab-relay/status");
+  const hb = st.worker_heartbeat || {};
+  $("#hbPill").className = "pill " + (hb.online ? "p-ok" : "p-warn");
+  $("#hbPill").textContent = hb.online ? `在线 (${hb.status || "idle"})` : "待在 Colab 启动";
+  $("#hbDetail").textContent = hb.online ? `可用 ${hb.drive_free_gb ?? "?"} GB · 已完成工单 ${hb.processed_jobs || 0}` : "打开 Colab 主笔记本并点全部运行，此处会自动变绿";
+  $("#gdPill").className = "pill " + (st.drive_mounted ? "p-ok" : "p-err");
+  $("#gdPill").textContent = st.drive_mounted ? "已挂载" : "未挂载";
+  $("#gdPath").textContent = (st.drive_root || "—") + "\\" + (st.relay_subdir || "ColabCloudRelay");
+  $("#bdPill").className = "pill " + (st.baidu_ready ? "p-ok" : "p-warn");
+  $("#bdPill").textContent = st.baidu_ready ? (st.baidu_has_stoken ? "已就绪(含STOKEN)" : "已连接") : "未发现Cookie";
+  $("#bdHint").textContent = st.baidu_auth_file || "请先在本机登录百度网盘";
+
+  const jb = await api("/api/colab-relay/jobs");
+  const rows = jb.jobs || [];
+  $("#qBody").innerHTML = rows.length ? rows.map(j => `<tr>
+    <td><div class="mono">${esc(j.job_id)}</div><div class="hint">${esc(j.title)}</div></td>
+    <td class="mono">${esc(j.kind)}</td>
+    <td class="mono">${esc(j.target_dir)}</td>
+    <td><span class="pill ${j.status === "completed" ? "p-ok" : (j.status === "failed" ? "p-err" : "p-warn")}">${esc(j.status)}</span></td>
+    <td class="mono">完 ${j.completed || 0} / 跳 ${j.skipped || 0} / 败 ${j.failed || 0}</td>
+    <td><button class="btn sm" onclick="retryJob('${esc(j.job_id)}')">重试</button> <button class="btn sm" onclick="delJob('${esc(j.job_id)}')">删除</button></td>
+  </tr>`).join("") : '<tr><td colspan="6" class="hint">暂无工单记录</td></tr>';
+}
+async function runAutoConfig(){
+  await api("/api/colab-relay/auto-configure", {method:"POST", body:"{}"});
+  await loadAll();
+  alert("自动配置完成！已将 Colab_Cloud_Relay.ipynb 同步到 Google Drive。");
+}
+async function copyCookieOnly(){
+  const r = await api("/api/colab-relay/copy-cookie", {method:"POST", body:JSON.stringify({copy_to_clipboard:true})});
+  if(!r.copied_to_clipboard && navigator.clipboard) await navigator.clipboard.writeText(r.cookie_header || "");
+  alert("已复制 BAIDU_COOKIE 到剪贴板，请直接粘贴进 Colab Secrets！");
+}
+async function openColabExternal(){
+  const r = await api("/api/colab-relay/open-colab", {method:"POST", body:JSON.stringify({copy_cookie_to_clipboard:true})});
+  if(r.url) window.open(r.url, "_blank");
+  alert(r.cookie_copied_to_clipboard ? "已在外部浏览器打开 Colab，且 BAIDU_COOKIE 已复制到剪贴板！" : "已在外部浏览器打开 Colab！");
+}
+async function enqueueJob(){
+  const kind = $("#qKind").value;
+  const lines = $("#qSources").value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const body = {
+    kind,
+    target_dir: $("#qTarget").value.trim(),
+    title: $("#qTitle").value.trim(),
+    daily_limit_gb: Number($("#qLimitGb").value || 700),
+    source_paths: kind === "url_to_gdrive" ? [] : lines,
+    urls: kind === "url_to_gdrive" ? lines : []
+  };
+  await api("/api/colab-relay/jobs/enqueue", {method:"POST", body:JSON.stringify(body)});
+  await loadAll();
+}
+async function retryJob(id){ await api(`/api/colab-relay/jobs/${encodeURIComponent(id)}/retry`, {method:"POST"}); await loadAll(); }
+async function delJob(id){ await api(`/api/colab-relay/jobs/${encodeURIComponent(id)}`, {method:"DELETE"}); await loadAll(); }
+loadAll();
+setInterval(loadAll, 8000);
+</script>
+</body>
+</html>

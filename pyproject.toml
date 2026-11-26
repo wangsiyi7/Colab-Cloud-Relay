@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "colab-cloud-relay"
+version = "0.1.0"
+description = "Turn Google Colab Ultra into a permanent, queue-driven, pluggable Cloud Drive & BaiduPan <-> Google Drive zero-VPN transfer node (FastAPI plugin + MCP + CLI)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.115.0",
+    "fastmcp>=2.0.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.9.0",
+    "uvicorn[standard]>=0.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+colab-relay = "colab_cloud_relay.cli:main"
+colab-relay-mcp = "colab_cloud_relay.mcp_server:main"
+
+[tool.setuptools.packages.find]
+include = ["colab_cloud_relay*"]
+
+[tool.setuptools.package-data]
+colab_cloud_relay = ["web_ui.html"]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
