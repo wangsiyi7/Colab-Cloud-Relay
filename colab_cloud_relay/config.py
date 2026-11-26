@@ -35,6 +35,7 @@ class RelayConfig:
     relay_subdir: str = DEFAULT_RELAY_SUBDIR
     baidu_auth_file: str = ""
     github_repo: str = GITHUB_REPO_DEFAULT
+    colab_drive_url: str = ""
     default_gdrive_subdir: str = "百度网盘同步"
     default_baidu_dir: str = "/NotebookLM_同步"
     default_workers: int = 4

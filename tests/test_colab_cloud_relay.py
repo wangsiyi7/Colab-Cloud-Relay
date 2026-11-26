@@ -67,6 +67,7 @@ def test_master_notebook_ast_and_zero_secrets() -> None:
     assert "once_and_disconnect" in dumped
     assert "runtime.unassign()" in dumped
     assert "verify_transferred_files" in dumped
+    assert "_compute_final_status" in dumped
     assert "os.sync()" in dumped
 
 
@@ -159,6 +160,21 @@ def test_auto_configure_queue_lifecycle_and_fastapi_plugin(
         assert r_open.status_code == 200
         assert r_open.json()["cookie_copied_to_clipboard"] is True
         assert "github/wangsiyi7/Colab-Cloud-Relay" in r_open.json()["url"]
+
+        # 5. Bind custom zero-warning Drive Colab URL -> status & open-colab prefer it
+        drive_colab_url = "https://colab.research.google.com/drive/1TestDriveNotebookId"
+        r_upd = client.put("/api/colab-relay/config", json={"colab_drive_url": drive_colab_url})
+        assert r_upd.status_code == 200
+        assert r_upd.json()["preferred_colab_url"] == drive_colab_url
+
+        r_st2 = client.get("/api/colab-relay/status")
+        assert r_st2.status_code == 200
+        assert r_st2.json()["colab_drive_url"] == drive_colab_url
+        assert r_st2.json()["preferred_colab_url"] == drive_colab_url
+
+        r_open2 = client.post("/api/colab-relay/open-colab", json={"copy_cookie_to_clipboard": False})
+        assert r_open2.status_code == 200
+        assert r_open2.json()["url"] == drive_colab_url
 
 
 def test_mcp_server_clean_stdio_and_tools() -> None:

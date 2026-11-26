@@ -353,6 +353,14 @@ class ColabBaiduClient:
         return size
 
 
+def _compute_final_status(stats: dict) -> str:
+    if stats.get("paused_for_daily_limit"):
+        return "paused_daily_limit"
+    if int(stats.get("failed") or 0) > 0:
+        return "partial_failed" if int(stats.get("completed") or 0) > 0 else "failed"
+    return "completed"
+
+
 class ColabRelayWorker:
     def __init__(self, drive_root: Path, cookie_header: str = "", default_daily_limit_gb: int = 700, default_workers: int = 4, default_parallel_ranges: int = 4) -> None:
         self.drive_root = Path(drive_root)
@@ -530,8 +538,13 @@ class ColabRelayWorker:
                     if not v_res["verification_passed"]:
                         stats["failed"] += len(v_res["verification_errors"])
                         stats["errors"].extend(v_res["verification_errors"])
+                    manifest_status = _compute_final_status(stats)
                     (dest_root / "_sync_manifest.json").write_text(
-                        json.dumps({**ticket, **stats, "elapsed_sec": round(time.time() - t0, 1)}, ensure_ascii=False, indent=2),
+                        json.dumps(
+                            {**ticket, **stats, "status": manifest_status, "elapsed_sec": round(time.time() - t0, 1)},
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
                         encoding="utf-8",
                     )
                 else:
@@ -649,12 +662,7 @@ class ColabRelayWorker:
             print(f"\\n>>> [START] {job_id} ({ticket.get('kind')}) - {ticket.get('title', '')}")
             try:
                 stats = await self.execute_ticket(ticket)
-                if stats.get("paused_for_daily_limit"):
-                    final_status = "paused_daily_limit"
-                elif int(stats.get("failed") or 0) > 0:
-                    final_status = "partial_failed" if int(stats.get("completed") or 0) > 0 else "failed"
-                else:
-                    final_status = "completed"
+                final_status = _compute_final_status(stats)
                 if bool(ticket.get("auto_disconnect")):
                     self.last_batch_auto_disconnect = True
                 result = {

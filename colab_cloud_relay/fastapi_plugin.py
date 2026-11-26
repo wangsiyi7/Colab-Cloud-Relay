@@ -57,7 +57,17 @@ class CopyCookieRequest(BaseModel):
 
 class OpenColabRequest(BaseModel):
     copy_cookie_to_clipboard: bool = True
-    use_github_url: bool = True
+    use_github_url: bool | None = None
+
+
+class RelayConfigUpdateRequest(BaseModel):
+    colab_drive_url: str | None = None
+    drive_root: str | None = None
+    default_gdrive_subdir: str | None = None
+    default_baidu_dir: str | None = None
+    default_workers: int | None = Field(default=None, ge=1, le=8)
+    default_parallel_ranges: int | None = Field(default=None, ge=1, le=8)
+    default_daily_limit_gb: int | None = Field(default=None, ge=0, le=5000)
 
 
 def _ensure_qm(cfg: RelayConfig) -> ColabQueueManager:
@@ -86,13 +96,17 @@ def create_colab_relay_router(
         counts = qm.queue_counts() if qm and drive_ok else {"queue": 0, "running": 0, "done": 0, "failed": 0}
         master_nb = str(qm.dirs()["notebooks"] / MASTER_NOTEBOOK_FILENAME) if qm else ""
         auth_probe = read_baidu_cookie_header(cfg.baidu_auth_file or None)
+        gh_url = get_colab_github_url(cfg.github_repo)
+        drive_url = (cfg.colab_drive_url or "").strip()
         return {
             "configured": bool(cfg.drive_root),
             "drive_root": cfg.drive_root,
             "drive_mounted": drive_ok,
             "relay_subdir": cfg.relay_subdir,
             "github_repo": cfg.github_repo,
-            "colab_github_url": get_colab_github_url(cfg.github_repo),
+            "colab_github_url": gh_url,
+            "colab_drive_url": drive_url,
+            "preferred_colab_url": drive_url or gh_url,
             "master_notebook_drive_path": master_nb,
             "master_notebook_exists": bool(master_nb and Path(master_nb).is_file()),
             "baidu_ready": bool(auth_probe["authenticated"]),
@@ -119,6 +133,34 @@ def create_colab_relay_router(
             github_repo=req.github_repo,
             relay_subdir=req.relay_subdir,
         )
+
+    @router.put("/config")
+    async def relay_update_config(body: RelayConfigUpdateRequest) -> dict[str, Any]:
+        cfg = config_loader()
+        if body.colab_drive_url is not None:
+            raw_url = body.colab_drive_url.strip()
+            if raw_url and not raw_url.startswith("https://colab.research.google.com/"):
+                raise HTTPException(status_code=400, detail="colab_drive_url 必须以 https://colab.research.google.com/ 开头")
+            cfg.colab_drive_url = raw_url
+        if body.drive_root is not None and body.drive_root.strip():
+            cfg.drive_root = body.drive_root.strip()
+        if body.default_gdrive_subdir is not None and body.default_gdrive_subdir.strip():
+            cfg.default_gdrive_subdir = body.default_gdrive_subdir.strip()
+        if body.default_baidu_dir is not None and body.default_baidu_dir.strip():
+            cfg.default_baidu_dir = body.default_baidu_dir.strip()
+        if body.default_workers is not None:
+            cfg.default_workers = body.default_workers
+        if body.default_parallel_ranges is not None:
+            cfg.default_parallel_ranges = body.default_parallel_ranges
+        if body.default_daily_limit_gb is not None:
+            cfg.default_daily_limit_gb = body.default_daily_limit_gb
+        save_config(cfg)
+        gh_url = get_colab_github_url(cfg.github_repo)
+        return {
+            "ok": True,
+            "config": cfg.to_dict(),
+            "preferred_colab_url": cfg.colab_drive_url or gh_url,
+        }
 
     @router.post("/jobs/enqueue")
     async def relay_enqueue_job(body: EnqueueRelayJobRequest) -> dict[str, Any]:
@@ -230,7 +272,12 @@ def create_colab_relay_router(
             auto_configure()
             cfg = config_loader()
         req = body or OpenColabRequest()
-        url = get_colab_github_url(cfg.github_repo) if req.use_github_url else "https://colab.research.google.com/"
+        if req.use_github_url is True:
+            url = get_colab_github_url(cfg.github_repo)
+        elif req.use_github_url is False:
+            url = (cfg.colab_drive_url or "").strip() or "https://colab.research.google.com/"
+        else:
+            url = (cfg.colab_drive_url or "").strip() or get_colab_github_url(cfg.github_repo)
         copied = False
         if req.copy_cookie_to_clipboard:
             probe = read_baidu_cookie_header(cfg.baidu_auth_file or None)
