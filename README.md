@@ -7,6 +7,7 @@
 - **0 本机硬盘占用 · 0 家宽下行 · 0 VPN 流量**：所有百度网盘 SVIP10 文件流、HTTP/HTTPS 离线大文件，全部在 Google 机房内网直写入你的 Google Drive（`/content/drive/MyDrive/`）。
 - **一次部署，永久复用，不改代码派发新任务**：在 Colab 启动主守护节点 `notebooks/Colab_Cloud_Relay.ipynb` 后，本地电脑随时通过 CLI / Web UI / FastAPI 插件 / MCP 往 Google Drive `ColabCloudRelay/queue/` 投递 JSON 工单，Colab 自动领取并写回进度与心跳。
 - **即插即用插件化架构**：一行 `app.include_router(create_colab_relay_router())` 即可嵌入 `NotebookLM-Fleet` 或任何 FastAPI 项目，也内置 7 个 FastMCP 工具与独立 Web 控制台。
+- **省算力自动切断防浪费**：默认开启 **`once_and_disconnect`** —— 所有文件搬运完 → **逐一校验落盘与精确字节数** → **`os.sync()` 强制刷盘写回回执** → 自动调用 `google.colab.runtime.unassign()` 立即释放 Colab 计算单元，绝不空转扣积分！`daemon` 模式下也支持 5 分钟空闲自动切断。
 - **零明文密钥落盘**：`.ipynb` 与队列 JSON 内绝不保存任何百度 Cookie/Token，Colab 仅在内存读取 `google.colab.userdata.get('BAIDU_COOKIE')`。
 
 ---

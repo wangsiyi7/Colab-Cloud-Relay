@@ -369,7 +369,51 @@ class ColabRelayWorker:
             p.mkdir(parents=True, exist_ok=True)
         return dirs
 
-    def write_heartbeat(self, status: str, current_job_id: str = "") -> None:
+    async def flush_drive_fs(self, wait_sec: int = 3) -> None:
+        """Force Linux/FUSE buffer flush so Google Drive syncs receipts and files before disconnect."""
+        try:
+            if hasattr(os, "sync"):
+                os.sync()
+        except Exception:
+            pass
+        if wait_sec > 0:
+            await asyncio.sleep(wait_sec)
+
+    async def disconnect_colab_runtime(self, reason: str, grace_sec: int = 5) -> None:
+        """Flush Google Drive FUSE, mark heartbeat disconnected, and unassign Colab runtime."""
+        print(f"\\n🔌 [省算力自动切断] {reason}，等待 {grace_sec}s 确保 Google Drive 落盘同步...")
+        await self.flush_drive_fs(wait_sec=max(1, int(grace_sec)))
+        self.write_heartbeat("disconnected_after_verify", extra={"auto_disconnected": True, "disconnect_reason": reason})
+        await self.flush_drive_fs(wait_sec=2)
+        try:
+            from google.colab import runtime
+            print("🛑 正在调用 google.colab.runtime.unassign() 释放当前计算单元...")
+            runtime.unassign()
+        except Exception as exc:
+            print(f"ℹ️ 非 Colab 容器或无法调用 runtime.unassign(): {exc}")
+
+    def verify_transferred_files(self, verified_targets: list[tuple[Path, int]]) -> dict:
+        errors = []
+        verified_count = 0
+        for dest, expected_size in verified_targets:
+            if not dest.exists():
+                errors.append(f"校验失败: 文件未落盘 {dest}")
+                continue
+            if dest.name.endswith((".bdpart", ".part")):
+                errors.append(f"校验失败: 仍为临时后缀 {dest.name}")
+                continue
+            actual = dest.stat().st_size
+            if expected_size > 0 and actual != expected_size:
+                errors.append(f"校验失败: 大小不匹配 {dest.name} (期望 {expected_size}, 实际 {actual})")
+                continue
+            verified_count += 1
+        return {
+            "verification_passed": len(errors) == 0,
+            "verified_count": verified_count,
+            "verification_errors": errors[:50],
+        }
+
+    def write_heartbeat(self, status: str, current_job_id: str = "", extra: dict | None = None) -> None:
         usage = shutil.disk_usage(self.drive_root)
         mem_gb = None
         try:
@@ -389,6 +433,8 @@ class ColabRelayWorker:
             "processed_jobs": self.processed_jobs,
             "baidu_cookie_ready": bool(self.cookie_header and "BDUSS=" in self.cookie_header),
         }
+        if extra:
+            hb.update(extra)
         tmp = self.relay_root / ".worker_heartbeat.tmp"
         tmp.write_text(json.dumps(hb, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.relay_root / "worker_heartbeat.json")
@@ -396,7 +442,18 @@ class ColabRelayWorker:
     async def execute_ticket(self, ticket: dict) -> dict:
         kind = ticket.get("kind") or ticket.get("direction") or "baidu_to_gdrive"
         t0 = time.time()
-        stats = {"completed": 0, "skipped": 0, "failed": 0, "bytes": 0, "paused_for_daily_limit": False, "errors": []}
+        stats = {
+            "completed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "bytes": 0,
+            "paused_for_daily_limit": False,
+            "verified_count": 0,
+            "verification_passed": True,
+            "verification_errors": [],
+            "errors": [],
+        }
+        verified_targets: list[tuple[Path, int]] = []
         excludes = ticket.get("exclude_patterns") or []
         preserve = bool(ticket.get("preserve_tree", True))
         skip_exist = bool(ticket.get("skip_existing", True))
@@ -427,10 +484,12 @@ class ColabRelayWorker:
                                 sz = int(item.get("size") or 0)
                                 if skip_exist and dest.exists() and (sz == 0 or dest.stat().st_size == sz):
                                     stats["skipped"] += 1
+                                    verified_targets.append((dest, sz))
                                     continue
                                 nbytes = await cli.download_to_drive(item, dest, ranges_n)
                                 stats["completed"] += 1
                                 stats["bytes"] += nbytes
+                                verified_targets.append((dest, sz or nbytes))
                                 print(f"[OK] {dest.relative_to(self.drive_root)} ({nbytes/1048576:.2f} MB)")
                             except Exception as exc:
                                 stats["failed"] += 1
@@ -465,6 +524,12 @@ class ColabRelayWorker:
                     for _ in wtasks:
                         await q.put(None)
                     await asyncio.gather(*wtasks)
+                    await self.flush_drive_fs(wait_sec=2)
+                    v_res = self.verify_transferred_files(verified_targets)
+                    stats.update(v_res)
+                    if not v_res["verification_passed"]:
+                        stats["failed"] += len(v_res["verification_errors"])
+                        stats["errors"].extend(v_res["verification_errors"])
                     (dest_root / "_sync_manifest.json").write_text(
                         json.dumps({**ticket, **stats, "elapsed_sec": round(time.time() - t0, 1)}, ensure_ascii=False, indent=2),
                         encoding="utf-8",
@@ -505,6 +570,7 @@ class ColabRelayWorker:
                         dest = dest_root / raw_name
                         if skip_exist and dest.exists() and dest.stat().st_size > 0:
                             stats["skipped"] += 1
+                            verified_targets.append((dest, dest.stat().st_size))
                             continue
                         part = dest.with_name(dest.name + ".part")
                         written = 0
@@ -518,10 +584,13 @@ class ColabRelayWorker:
                         part.replace(dest)
                         stats["completed"] += 1
                         stats["bytes"] += written
+                        verified_targets.append((dest, written))
                         print(f"[URL OK] {dest.name} ({written/1048576:.2f} MB)")
                     except Exception as exc:
                         stats["failed"] += 1
                         stats["errors"].append(f"{u}: {exc}")
+            await self.flush_drive_fs(wait_sec=2)
+            stats.update(self.verify_transferred_files(verified_targets))
         elif kind == "gdrive_organize":
             sub = str(ticket.get("target_dir") or "").strip().strip("/\\\\")
             scan_dir = self.drive_root.joinpath(*(safe_seg(s) for s in re.split(r"[/\\\\]+", sub) if s)) if sub else self.drive_root
@@ -560,10 +629,11 @@ class ColabRelayWorker:
             found.extend(sorted((p for p in qd.glob("*.json") if not p.name.startswith(".")), key=lambda p: p.stat().st_mtime))
         return found
 
-    async def process_once(self) -> int:
+    async def process_once(self, will_auto_disconnect: bool = False) -> int:
         dirs = self.ensure_dirs()
         tickets = self.scan_queues()
         handled = 0
+        self.last_batch_auto_disconnect = False
         for tpath in tickets:
             try:
                 ticket = json.loads(tpath.read_text(encoding="utf-8"))
@@ -585,10 +655,13 @@ class ColabRelayWorker:
                     final_status = "partial_failed" if int(stats.get("completed") or 0) > 0 else "failed"
                 else:
                     final_status = "completed"
+                if bool(ticket.get("auto_disconnect")):
+                    self.last_batch_auto_disconnect = True
                 result = {
                     **ticket,
                     **stats,
                     "status": final_status,
+                    "auto_disconnected": bool(will_auto_disconnect or ticket.get("auto_disconnect")),
                     "finished_at": datetime.now(timezone.utc).isoformat(),
                 }
                 dest_dir = dirs["failed"] if final_status == "failed" else dirs["done"]
@@ -601,7 +674,11 @@ class ColabRelayWorker:
                 running_path.unlink(missing_ok=True)
                 self.processed_jobs += 1
                 handled += 1
-                print(f"<<< [DONE] {job_id}: {final_status} | completed={stats['completed']} skipped={stats['skipped']} failed={stats['failed']} bytes={stats['bytes']}")
+                print(
+                    f"<<< [DONE] {job_id}: {final_status} | completed={stats['completed']} "
+                    f"skipped={stats['skipped']} verified={stats.get('verified_count', 0)} "
+                    f"verification_passed={stats.get('verification_passed')} failed={stats['failed']} bytes={stats['bytes']}"
+                )
             except Exception as exc:
                 err_res = {**ticket, "status": "failed", "errors": [str(exc)], "finished_at": datetime.now(timezone.utc).isoformat()}
                 (dirs["failed"] / f"{job_id}.json").write_text(json.dumps(err_res, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -609,26 +686,57 @@ class ColabRelayWorker:
                 print(f"<<< [FAIL] {job_id}: {exc}")
         return handled
 
-    async def run_forever(self, *, mode: str = "daemon", poll_interval_sec: int = 15, max_idle_minutes: int = 720) -> None:
+    async def run_forever(
+        self,
+        *,
+        mode: str = "once_and_disconnect",
+        poll_interval_sec: int = 15,
+        max_idle_minutes: int = 5,
+        auto_disconnect: bool = True,
+        disconnect_grace_seconds: int = 5,
+    ) -> None:
         self.ensure_dirs()
         last_active = time.time()
-        print(f"🚀 Colab-Cloud-Relay 已启动 | 模式={mode} | 监听目录={self.relay_root / 'queue'}")
+        disconnected_cleanly = False
+        print(f"🚀 Colab-Cloud-Relay 已启动 | 模式={mode} | 完结自动切断={auto_disconnect} | 监听目录={self.relay_root / 'queue'}")
         try:
             while True:
                 self.write_heartbeat("idle")
-                cnt = await self.process_once()
+                will_dc = auto_disconnect and (mode == "once_and_disconnect")
+                cnt = await self.process_once(will_auto_disconnect=will_dc)
                 if cnt > 0:
                     last_active = time.time()
-                self.write_heartbeat("idle")
-                if mode == "once":
-                    print("✅ 单次巡检已完成。")
+                if mode == "once_and_disconnect":
+                    await self.flush_drive_fs(wait_sec=2)
+                    if auto_disconnect:
+                        disconnected_cleanly = True
+                        await self.disconnect_colab_runtime(
+                            f"已处理 {cnt} 个工单并完成文件完整性校验",
+                            grace_sec=disconnect_grace_seconds,
+                        )
+                    else:
+                        print(f"✅ once_and_disconnect 单轮完成（已关闭自动切断，共处理 {cnt} 个工单）。")
                     break
+                if mode == "once":
+                    await self.flush_drive_fs(wait_sec=2)
+                    print(f"✅ 单次巡检已完成（处理 {cnt} 个工单）。")
+                    break
+                if cnt > 0 and auto_disconnect and getattr(self, "last_batch_auto_disconnect", False):
+                    disconnected_cleanly = True
+                    await self.disconnect_colab_runtime("收到工单 auto_disconnect=true，校验完立即释放算力", grace_sec=disconnect_grace_seconds)
+                    break
+                self.write_heartbeat("idle")
                 if max_idle_minutes > 0 and (time.time() - last_active) >= max_idle_minutes * 60:
-                    print(f"⏸️ 空闲超过 {max_idle_minutes} 分钟，自动休眠退出。")
+                    if auto_disconnect:
+                        disconnected_cleanly = True
+                        await self.disconnect_colab_runtime(f"空闲超过 {max_idle_minutes} 分钟，自动释放计算单元", grace_sec=disconnect_grace_seconds)
+                    else:
+                        print(f"⏸️ 空闲超过 {max_idle_minutes} 分钟，自动休眠退出。")
                     break
                 await asyncio.sleep(max(3, int(poll_interval_sec)))
         finally:
-            self.write_heartbeat("stopped")
+            if not disconnected_cleanly:
+                self.write_heartbeat("stopped")
 '''
 
 
@@ -638,16 +746,16 @@ def build_master_worker_notebook(*, github_repo: str = GITHUB_REPO_DEFAULT, rela
     cells = [
         _md_cell(
             [
-                "# ⚡ Colab-Cloud-Relay · Google Colab Ultra 永久云端网盘直传节点\n",
+                "# ⚡ Colab-Cloud-Relay · Google Colab Ultra 零 VPN 云端直传（省算力自动切断版）\n",
                 "\n",
                 f"> **独立开源插件仓库**：`{github_repo}` · [在 Colab 打开最新版]({gh_url})  \n",
                 "> **适用场景**：**Google AI Ultra（1000 积分） + 百度网盘 SVIP10** 或离线 URL 直存 Google 云盘  \n",
-                "> **核心能力**：0 本机硬盘占用 · 0 VPN 流量 · 本地关机也能跑 · 本地随时下发新工单无需重开脚本！\n",
+                "> **省算力保护机制**：默认 `once_and_disconnect` 模式——传输完成 → **字节大小与落盘完整性校验** → `os.sync()` 刷盘 → **立即调用 `runtime.unassign()` 自动切断释放计算单元**！\n",
                 "\n",
                 "### 10 秒首次部署（只需配置一次 `BAIDU_COOKIE`，后续永久复用）\n",
                 "1. 在本地电脑运行 **`一键自动配置环境`** 或 **`打开 Colab + 复制 Cookie`**，你的百度 Cookie 已自动复制到剪贴板；\n",
                 "2. 点击 Colab 最左侧竖栏 **🔑 Secrets（密钥）** → **+ 添加新密钥**：名称填 `BAIDU_COOKIE`，粘贴并打开访问开关；\n",
-                "3. 右上角 **更改运行时类型** 选 **`CPU` + `高内存（High-RAM）` + `后台执行`**（几乎不消耗 Ultra 1000 积分！），按 **`Ctrl + F9`（全部运行）** 即可在线候命！",
+                "3. 右上角 **更改运行时类型** 选 **`CPU` + `高内存（High-RAM）`**（几乎不消耗 Ultra 1000 积分！），按 **`Ctrl + F9`（全部运行）**；传输并校验完会自动切断！",
             ]
         ),
         _code_cell(
@@ -689,10 +797,12 @@ def build_master_worker_notebook(*, github_repo: str = GITHUB_REPO_DEFAULT, rela
         _code_cell(_WORKER_ENGINE_SRC.splitlines()),
         _code_cell(
             [
-                "# 第 3 步：启动永久云端值守守护循环（接收来自本地桌面 / MCP / WebUI 的工单）",
-                'RELAY_MODE = "daemon" #@param ["daemon", "once"]',
+                "# 第 3 步：执行工单并自动校验落盘 + 立即切断释放算力（防止空转浪费计算单元）",
+                'RELAY_MODE = "once_and_disconnect" #@param ["once_and_disconnect", "once", "daemon"]',
+                'AUTO_DISCONNECT_AFTER_VERIFY = True #@param {type:"boolean"}',
+                'IDLE_DISCONNECT_MINUTES = 5 #@param {type:"integer"}',
+                'DISCONNECT_GRACE_SECONDS = 5 #@param {type:"integer"}',
                 'POLL_INTERVAL_SEC = 15 #@param {type:"integer"}',
-                'MAX_IDLE_MINUTES = 720 #@param {type:"integer"}',
                 'DEFAULT_DAILY_LIMIT_GB = 700 #@param {type:"integer"}',
                 'DEFAULT_WORKERS = 4 #@param {type:"integer"}',
                 'DEFAULT_PARALLEL_RANGES = 4 #@param {type:"integer"}',
@@ -707,7 +817,9 @@ def build_master_worker_notebook(*, github_repo: str = GITHUB_REPO_DEFAULT, rela
                 "await worker.run_forever(",
                 "    mode=RELAY_MODE,",
                 "    poll_interval_sec=POLL_INTERVAL_SEC,",
-                "    max_idle_minutes=MAX_IDLE_MINUTES,",
+                "    max_idle_minutes=IDLE_DISCONNECT_MINUTES,",
+                "    auto_disconnect=AUTO_DISCONNECT_AFTER_VERIFY,",
+                "    disconnect_grace_seconds=DISCONNECT_GRACE_SECONDS,",
                 ")",
             ]
         ),

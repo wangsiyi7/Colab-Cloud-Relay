@@ -64,6 +64,10 @@ def test_master_notebook_ast_and_zero_secrets() -> None:
     dumped = json.dumps(nb, ensure_ascii=False)
     assert "userdata.get('BAIDU_COOKIE')" in dumped
     assert "relay_test_secret" not in dumped
+    assert "once_and_disconnect" in dumped
+    assert "runtime.unassign()" in dumped
+    assert "verify_transferred_files" in dumped
+    assert "os.sync()" in dumped
 
 
 def test_auto_configure_queue_lifecycle_and_fastapi_plugin(

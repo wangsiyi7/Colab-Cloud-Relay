@@ -56,6 +56,7 @@ class ColabQueueManager:
         daily_limit_gb: int = 700,
         exclude_patterns: list[str] | None = None,
         receipt_drive_rel_path: str = "",
+        auto_disconnect: bool = True,
     ) -> dict[str, Any]:
         if kind not in VALID_JOB_KINDS:
             raise ValueError(f"不支持的任务类型 {kind!r}，可选: {', '.join(VALID_JOB_KINDS)}")
@@ -96,6 +97,7 @@ class ColabQueueManager:
             "daily_limit_gb": max(0, int(daily_limit_gb)),
             "exclude_patterns": [str(p).strip() for p in (exclude_patterns or []) if str(p).strip()],
             "receipt_drive_rel_path": (receipt_drive_rel_path or "").strip().lstrip("/\\"),
+            "auto_disconnect": bool(auto_disconnect),
             "status": "queued",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "created_ts": time.time(),
@@ -197,6 +199,7 @@ class ColabQueueManager:
             daily_limit_gb=int(existing.get("daily_limit_gb") if existing.get("daily_limit_gb") is not None else 700),
             exclude_patterns=existing.get("exclude_patterns") or [],
             receipt_drive_rel_path=str(existing.get("receipt_drive_rel_path") or ""),
+            auto_disconnect=bool(existing.get("auto_disconnect", True)),
         )
 
     def delete_job(self, job_id: str) -> dict[str, Any]:

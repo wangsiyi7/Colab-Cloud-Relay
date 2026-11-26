@@ -48,6 +48,7 @@ class EnqueueRelayJobRequest(BaseModel):
     daily_limit_gb: int = Field(default=700, ge=0, le=5000)
     exclude_patterns: list[str] = Field(default_factory=list)
     receipt_drive_rel_path: str = ""
+    auto_disconnect: bool = True
 
 
 class CopyCookieRequest(BaseModel):
@@ -137,6 +138,7 @@ def create_colab_relay_router(
                 daily_limit_gb=body.daily_limit_gb,
                 exclude_patterns=body.exclude_patterns,
                 receipt_drive_rel_path=body.receipt_drive_rel_path,
+                auto_disconnect=body.auto_disconnect,
             )
             return {"ok": True, "ticket": ticket}
         except ValueError as exc:
